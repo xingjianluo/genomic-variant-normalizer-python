@@ -1,32 +1,99 @@
-"""Application service: submission processing, caching, bounded concurrency."""
+"""Application service: submission processing, caching, bounded concurrency.
+
+Concurrency model
+-----------------
+* every submission is processed from local data only; results live inside the
+  returned :class:`CallsetResult` and no per-sample global state is kept, so two
+  concurrent requests over overlapping sample sets cannot contaminate each
+  other;
+* identical submissions (same text + sample identity) hash to the same key and
+  reuse the previously computed result. The cache is a bounded, thread-safe
+  LRU guarded by an :class:`~threading.RLock`;
+* the parsing/normalization work itself is CPU-bound and O(n log n) in the
+  number of records, so a large request cannot wedge the process state held by
+  other requests — it only spends ordinary interpreter time.
+"""
 from __future__ import annotations
 
 import hashlib
+import threading
+from collections import OrderedDict
 
-from .models import CallsetResult
-from .parsing import parse_multi_sample, parse_single_sample
 from .merging import merge_callset, validate_and_normalize
+from .models import CallsetResult, RawRecord, Rejection
+from .parsing import parse_multi_sample, parse_single_sample
 
 _CACHE_MAX = 128
 
 
 class CallsetService:
+    """Stateless-per-request processing with a shared content-addressed cache."""
+
     def __init__(self, cache_max: int = _CACHE_MAX) -> None:
-        self._cache: dict[str, CallsetResult] = {}
+        self._cache: OrderedDict[str, CallsetResult] = OrderedDict()
         self._cache_max = cache_max
-
-    def submit_single(self, text: str, sample: str) -> CallsetResult:
-        raise NotImplementedError
-
-    def submit_multi(self, text: str) -> CallsetResult:
-        raise NotImplementedError
-
-    def _process(self, content_hash: str, raw, rejected) -> CallsetResult:
-        accepted, norm_rejected = validate_and_normalize(raw)
-        rejected = rejected + norm_rejected
-        return merge_callset(content_hash, accepted, rejected)
+        self._lock = threading.RLock()
 
     @staticmethod
     def hash_content(text: str, sample: str | None = None) -> str:
         payload = (sample or "") + "\x00" + text
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def get_cached(self, content_hash: str) -> CallsetResult | None:
+        with self._lock:
+            hit = self._cache.get(content_hash)
+            if hit is not None:
+                self._cache.move_to_end(content_hash)
+            return hit
+
+    def _store(self, content_hash: str, result: CallsetResult) -> None:
+        with self._lock:
+            self._cache[content_hash] = result
+            self._cache.move_to_end(content_hash)
+            while len(self._cache) > self._cache_max:
+                self._cache.popitem(last=False)
+
+    def cache_info(self) -> dict[str, int]:
+        with self._lock:
+            return {"entries": len(self._cache), "max": self._cache_max}
+
+    def clear_cache(self) -> None:
+        with self._lock:
+            self._cache.clear()
+
+    @staticmethod
+    def _process(raw: list[RawRecord], rejected: list[Rejection], content_hash: str) -> CallsetResult:
+        accepted, norm_rejected = validate_and_normalize(raw)
+        all_rejected = rejected + norm_rejected
+        return merge_callset(content_hash, accepted, all_rejected)
+
+    def _run_cached(self, content_hash: str, raw: list[RawRecord],
+                    rejected: list[Rejection]) -> CallsetResult:
+        # Fast path under lock for cache hits; compute without holding the lock
+        # so a heavy request never blocks cache access for other requests.
+        with self._lock:
+            cached = self._cache.get(content_hash)
+            if cached is not None:
+                self._cache.move_to_end(content_hash)
+                return cached
+
+        result = self._process(raw, rejected, content_hash)
+        self._store(content_hash, result)
+        return result
+
+    def submit_single(self, text: str, sample: str) -> CallsetResult:
+        sample = sample.strip()
+        content_hash = self.hash_content(text, sample)
+        cached = self.get_cached(content_hash)
+        if cached is not None:
+            return cached
+        raw, rejected = parse_single_sample(text, sample)
+        return self._run_cached(content_hash, raw, rejected)
+
+    def submit_multi(self, text: str) -> CallsetResult:
+        content_hash = self.hash_content(text)
+        cached = self.get_cached(content_hash)
+        if cached is not None:
+            return cached
+        raw, rejected = parse_multi_sample(text)
+        return self._run_cached(content_hash, raw, rejected)
