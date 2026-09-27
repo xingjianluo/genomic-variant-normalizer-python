@@ -16,12 +16,15 @@ Concurrency model
 from __future__ import annotations
 
 import hashlib
+import logging
 import threading
 from collections import OrderedDict
 
 from .merging import merge_callset, validate_and_normalize
 from .models import CallsetResult, RawRecord, Rejection
 from .parsing import parse_multi_sample, parse_single_sample
+
+logger = logging.getLogger(__name__)
 
 _CACHE_MAX = 128
 
@@ -75,9 +78,18 @@ class CallsetService:
             cached = self._cache.get(content_hash)
             if cached is not None:
                 self._cache.move_to_end(content_hash)
+                logger.info("提交命中缓存 hash=%s 前 8 位，复用既有结论 entries=%d",
+                            content_hash[:8], len(cached.entries))
                 return cached
 
+        logger.info("新提交 hash=%s 前 8 位: 原始记录 %d 条, 结构性拒绝 %d 条",
+                    content_hash[:8], len(raw), len(rejected))
         result = self._process(raw, rejected, content_hash)
+        logger.info(
+            "判定依据 hash=%s: 接受 %d, 聚合条目 %d, 拒绝 %d, 冲突 %d",
+            content_hash[:8], result.accepted_count, len(result.entries),
+            len(result.rejected), len(result.conflicts),
+        )
         self._store(content_hash, result)
         return result
 
