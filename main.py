@@ -1,12 +1,15 @@
 import uvicorn
 from fastapi import FastAPI
 
-app = FastAPI()
+from variant_service.api import router as variant_router
+
+app = FastAPI(title="Offline Genomic Variant Normalizer")
+app.include_router(variant_router)
 
 
 @app.get("/")
 def read_root():
-    return {"Hello": "World"}
+    return {"service": "genomic-variant-normalizer", "status": "ok"}
 
 
 if __name__ == "__main__":
