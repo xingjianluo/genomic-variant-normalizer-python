@@ -125,3 +125,65 @@ class CallsetResult:
     rejected: list[Rejection] = field(default_factory=list)
     conflicts: list[Conflict] = field(default_factory=list)
     accepted_count: int = 0
+    version_id: str | None = None  # set when the submission is versioned
+
+
+class IncrementErrorType(str, Enum):
+    """Distinguishable reasons an incremental commit cannot be applied."""
+
+    BASELINE_NOT_FOUND = "BASELINE_NOT_FOUND"
+    BASELINE_SUPERSEDED = "BASELINE_SUPERSEDED"
+    EMPTY_INCREMENT = "EMPTY_INCREMENT"
+
+
+@dataclass(frozen=True)
+class EntryChange:
+    """How one aggregated entry differs between two versions."""
+
+    variant: VariantKey
+    kind: str                              # "ADDED" | "REMOVED" | "CHANGED"
+    samples_added: tuple[str, ...] = ()
+    samples_removed: tuple[str, ...] = ()
+    # (sample, old_genotype, new_genotype)
+    genotype_changes: tuple[tuple[str, str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class ChangeSummary:
+    """Deterministic diff of one version against its parent version."""
+
+    added_entries: tuple[VariantKey, ...] = ()
+    removed_entries: tuple[VariantKey, ...] = ()
+    changed_entries: tuple[EntryChange, ...] = ()
+    # sample-level carrier presence across the whole callset
+    samples_added: tuple[str, ...] = ()
+    samples_removed: tuple[str, ...] = ()
+    new_conflicts: tuple[Conflict, ...] = ()
+    resolved_conflicts: tuple[Conflict, ...] = ()
+    new_rejections: tuple[Rejection, ...] = ()
+    resolved_rejections: tuple[Rejection, ...] = ()
+    identical: bool = False
+
+
+@dataclass(frozen=True)
+class CallsetSnapshot:
+    """One immutable, content-addressed callset version.
+
+    A snapshot keeps the full per-sample record state (accepted normalized
+    records and rejections attributed to samples) so a later increment can
+    replace one sample's calls wholesale and re-merge without the original
+    text, while untouched samples stay byte-for-byte stable.
+    """
+
+    version_id: str                        # content hash of the full state
+    parent_version: str | None             # version this one was built on
+    root_version: str                      # lineage root (id of the root state)
+    sequence: int                          # 0 for a root, >= 1 for increments
+    commit_seq: int                        # monotonic commit order within lineage
+    samples: tuple[str, ...]               # sorted sample names present
+    touched_samples: tuple[str, ...]       # samples this commit replaced/added
+    accepted: tuple[VariantRecord, ...]
+    rejected: tuple[Rejection, ...]
+    rejection_owners: tuple[tuple[str, ...], ...]  # parallel to rejected: owner samples
+    result: CallsetResult
+    changes: ChangeSummary

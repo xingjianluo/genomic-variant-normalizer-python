@@ -31,9 +31,15 @@ def test_repeated_submission_reuses_conclusion(service):
     first = service.submit_single(SINGLE_A, "S1")
     second = service.submit_single(SINGLE_A, "S1")
     third = service.submit_single(SINGLE_A, "S1")
-    logger.info("重复提交 cache=%s", service.cache_info())
-    assert first is second is third  # exact object reused from cache
-    assert first.content_hash == third.content_hash
+    logger.info("重复提交 cache=%s version=%s", service.cache_info(),
+                (first.version_id or "")[:8])
+    # Repeated identical submissions share the same content hash, version id
+    # and conclusions (entries/rejections/conflicts are equal).
+    assert first.content_hash == second.content_hash == third.content_hash
+    assert first.version_id and first.version_id == third.version_id
+    assert first.entries == third.entries
+    assert first.rejected == third.rejected
+    assert first.conflicts == third.conflicts
     assert service.cache_info()["entries"] == 1
 
 

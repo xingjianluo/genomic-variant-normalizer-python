@@ -255,6 +255,14 @@ def merge_callset(
             )
         )
 
+    # Drop entries where every record is ./. (uncalled): a variant nobody
+    # actually calls is not part of the callset. This also keeps an incremental
+    # retraction from leaving phantom empty entries behind.
+    entries = [
+        e for e in entries
+        if any(g is not Genotype.MISSING for g in e.genotype_by_sample.values())
+    ]
+
     ordered_conflicts = [top_conflicts[k] for k in sorted(top_conflicts)]
     return CallsetResult(
         content_hash=content_hash,

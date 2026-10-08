@@ -48,7 +48,7 @@ def test_multi_sample_compact():
         "chr1\t100\tA\tT\t0/1\t1/1\n"
         "chr2\t200\tG\tC\t.\t0/0\n"
     )
-    raws, rejected = parse_multi_sample(text)
+    raws, rejected, _names = parse_multi_sample(text)
     logger.info("输入摘要 compact 多样本 -> %d 记录 %d 拒绝", len(raws), len(rejected))
     assert len(raws) == 4
     assert rejected == []
@@ -60,10 +60,27 @@ def test_multi_sample_vcf_format():
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
         "chr1\t100\t.\tA\tT\t.\t.\t.\tGT:DP\t0/1:12\t1/1:30\n"
     )
-    raws, rejected = parse_multi_sample(text)
+    raws, rejected, _names = parse_multi_sample(text)
     assert len(raws) == 2
     assert rejected == []
     assert {r.genotype for r in raws} == {"0/1", "1/1"}
+    # Regression: VCF fixed columns put REF at index 3 and ALT at 4 (not ID/REF).
+    assert {(r.ref, r.alt, r.pos_raw, r.chrom) for r in raws} == {
+        ("A", "T", "100", "chr1"),
+    }
+
+
+def test_multi_sample_vcf_normalizes_end_to_end(service):
+    """VCF rows must reach the callset with the correct variant, not be rejected."""
+    text = (
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+        "chr1\t100\t.\tA\tT\t.\t.\t.\tGT\t0/1\t1/1\n"
+    )
+    result = service.submit_multi(text)
+    assert [(r.reason.value) for r in result.rejected] == []
+    assert len(result.entries) == 1
+    assert result.entries[0].variant.render() == "CHR1:100:A:T"
+    assert result.entries[0].samples == ("S1", "S2")
 
 
 def test_multi_sample_column_count_mismatch():
@@ -72,7 +89,7 @@ def test_multi_sample_column_count_mismatch():
         "chr1\t100\tA\tT\t0/1\n"              # one sample cell short
         "chr2\t200\tG\tC\t0/0\t0/1\n"
     )
-    raws, rejected = parse_multi_sample(text)
+    raws, rejected, _names = parse_multi_sample(text)
     logger.info("输入摘要 列数错位 -> reasons=%s", [r.reason.value for r in rejected])
     assert len(raws) == 2  # good row still parsed, bad row not silently dropped
     assert len(rejected) == 1
@@ -85,7 +102,7 @@ def test_multi_sample_vcf_missing_gt_field():
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
         "chr1\t100\t.\tA\tT\t.\t.\t.\tDP\t12\n"
     )
-    raws, rejected = parse_multi_sample(text)
+    raws, rejected, _names = parse_multi_sample(text)
     assert raws == []
     assert rejected[0].reason is RejectReason.MALFORMED_LINE
 
@@ -95,7 +112,7 @@ def test_multi_sample_duplicate_sample_names():
         "#CHROM\tPOS\tREF\tALT\tS1\tS1\n"
         "chr1\t100\tA\tT\t0/1\t1/1\n"
     )
-    raws, rejected = parse_multi_sample(text)
+    raws, rejected, _names = parse_multi_sample(text)
     assert [r.reason for r in rejected] == [RejectReason.DUPLICATE_SAMPLE]
     names = sorted({r.sample for r in raws})
     logger.info("输入摘要 重名样本 -> 样本名=%s", names)
@@ -104,12 +121,12 @@ def test_multi_sample_duplicate_sample_names():
 
 def test_multi_sample_without_header_infers_names():
     text = "chr1\t100\tA\tT\t0/1\t1/1\nchr2\t200\tG\tC\t0/0\t.\n"
-    raws, rejected = parse_multi_sample(text)
+    raws, rejected, _names = parse_multi_sample(text)
     assert rejected == []
     assert {r.sample for r in raws} == {"sample_1", "sample_2"}
     # a later row with different count is a mismatch, not a silent resize
     text_bad = text + "chr3\t300\tA\tG\t0/1\n"
-    raws2, rejected2 = parse_multi_sample(text_bad)
+    raws2, rejected2, _names = parse_multi_sample(text_bad)
     assert rejected2[0].reason is RejectReason.HEADER_SAMPLE_MISMATCH
     assert len(raws2) == 4
 

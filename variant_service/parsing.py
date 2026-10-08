@@ -51,12 +51,13 @@ def _split_row(line: str) -> list[str]:
     return [p.strip() for p in parts]
 
 
-def _raw_record(parts: list[str], gt: str, sample: str, location: Location) -> RawRecord:
+def _raw_record(parts: list[str], gt: str, sample: str, location: Location,
+                ref_idx: int = 2, alt_idx: int = 3) -> RawRecord:
     return RawRecord(
         chrom=parts[0],
         pos_raw=parts[1],
-        ref=parts[2].upper(),
-        alt=parts[3].upper(),
+        ref=parts[ref_idx].upper(),
+        alt=parts[alt_idx].upper(),
         genotype=gt.strip(),
         sample=sample,
         location=location,
@@ -139,8 +140,12 @@ def _parse_header(line: str) -> tuple[list[str], bool, int]:
     return cols[4:], False, 0
 
 
-def parse_multi_sample(text: str) -> tuple[list[RawRecord], list[Rejection]]:
-    """Parse a multi-sample block (optional header) into raw records/rejections."""
+def parse_multi_sample(text: str) -> tuple[list[RawRecord], list[Rejection], list[str]]:
+    """Parse a multi-sample block (optional header).
+
+    Returns raw records, structural rejections, and the ordered list of sample
+    column names actually used (empty when no sample column could be inferred).
+    """
     block = "multisample"
     raws: list[RawRecord] = []
     rejects: list[Rejection] = []
@@ -212,7 +217,7 @@ def parse_multi_sample(text: str) -> tuple[list[RawRecord], list[Rejection]]:
             for name, cell in zip(names, sample_cells):
                 gt_parts = cell.split(":")
                 gt = gt_parts[gt_idx] if gt_idx < len(gt_parts) else ""
-                raws.append(_raw_record(parts, gt, name, loc))
+                raws.append(_raw_record(parts, gt, name, loc, ref_idx=3, alt_idx=4))
         else:
             expected = 4 + len(names)
             if inferred_columns is not None:
@@ -228,4 +233,4 @@ def parse_multi_sample(text: str) -> tuple[list[RawRecord], list[Rejection]]:
             for name, cell in zip(names, sample_cells):
                 raws.append(_raw_record(parts, cell, name, loc))
 
-    return raws, rejects
+    return raws, rejects, list(names) if names else []
