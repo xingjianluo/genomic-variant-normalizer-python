@@ -229,3 +229,29 @@ def parse_multi_sample(text: str) -> tuple[list[RawRecord], list[Rejection]]:
                 raws.append(_raw_record(parts, cell, name, loc))
 
     return raws, rejects
+
+
+def declared_samples(text: str) -> tuple[str, ...]:
+    """Return the ordered sample names a submission declares.
+
+    Used by incremental updates to know which samples one batch carries (and
+    therefore replaces). Mirrors :func:`parse_multi_sample` naming exactly:
+    an explicit header (compact or VCF, with duplicate-name de-duplication),
+    otherwise names inferred from the first data row's sample columns.
+    Returns an empty tuple when the text has no usable header/data row.
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("##"):
+            continue
+        if stripped.startswith("#"):
+            header_names, _, _ = _parse_header(stripped[1:])
+            if header_names:
+                deduped, _ = _dedupe_names(header_names, _loc("multisample", 0, stripped))
+                return tuple(deduped)
+            continue
+        parts = _split_row(stripped)
+        if len(parts) > 4:
+            return tuple(f"sample_{i + 1}" for i in range(len(parts) - 4))
+        return ()
+    return ()

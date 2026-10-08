@@ -43,14 +43,20 @@ from .normalization import (
 _RANK = {Genotype.HOM: 4, Genotype.HET: 3, Genotype.MISSING: 2, Genotype.REF: 1}
 
 
-def _reject(reason: RejectReason, location: Location, detail: str) -> Rejection:
-    return Rejection(reason=reason, location=location, detail=detail)
+def _reject(reason: RejectReason, location: Location, detail: str,
+            sample: str | None = None) -> Rejection:
+    return Rejection(reason=reason, location=location, detail=detail, sample=sample)
 
 
 def validate_and_normalize(
     raws: list[RawRecord],
 ) -> tuple[list[VariantRecord], list[Rejection]]:
-    """Semantically validate raw records; return accepted + rejected lists."""
+    """Semantically validate raw records; return accepted + rejected lists.
+
+    Every raw record represents one concrete sample cell, so each semantic
+    rejection is attributed to that sample; this lets an incremental update
+    replace one sample's rejects along with its calls.
+    """
     accepted: list[VariantRecord] = []
     rejected: list[Rejection] = []
 
@@ -60,27 +66,32 @@ def validate_and_normalize(
         try:
             chrom = normalize_chrom(raw.chrom)
         except ValueError:
-            rejected.append(_reject(RejectReason.BAD_CHROM, loc, f"染色体非法: {raw.chrom!r}"))
+            rejected.append(_reject(RejectReason.BAD_CHROM, loc, f"染色体非法: {raw.chrom!r}",
+                                   raw.sample))
             continue
         # position
         pos_text = raw.pos_raw.strip()
         if not re.fullmatch(r"\d+", pos_text):
-            rejected.append(_reject(RejectReason.BAD_POSITION, loc, f"POS 不是非负整数: {raw.pos_raw!r}"))
+            rejected.append(_reject(RejectReason.BAD_POSITION, loc,
+                                    f"POS 不是非负整数: {raw.pos_raw!r}", raw.sample))
             continue
         pos = int(pos_text)
         if pos < 1:
-            rejected.append(_reject(RejectReason.BAD_POSITION, loc, f"POS 必须 >= 1: {pos}"))
+            rejected.append(_reject(RejectReason.BAD_POSITION, loc,
+                                    f"POS 必须 >= 1: {pos}", raw.sample))
             continue
         # alleles
         ref, alt = raw.ref, raw.alt
         if not is_valid_allele(ref) or not is_valid_allele(alt):
             rejected.append(
-                _reject(RejectReason.BAD_ALLELE, loc, f"REF/ALT 含非法碱基或为空: {ref!r}/{alt!r}")
+                _reject(RejectReason.BAD_ALLELE, loc,
+                        f"REF/ALT 含非法碱基或为空: {ref!r}/{alt!r}", raw.sample)
             )
             continue
         if ref == alt:
             rejected.append(
-                _reject(RejectReason.BAD_ALLELE, loc, f"REF 与 ALT 相同，不构成变异: {ref}")
+                _reject(RejectReason.BAD_ALLELE, loc,
+                        f"REF 与 ALT 相同，不构成变异: {ref}", raw.sample)
             )
             continue
         # genotype
@@ -88,14 +99,15 @@ def validate_and_normalize(
             genotype = canonicalize_genotype(raw.genotype)
         except ValueError:
             rejected.append(
-                _reject(RejectReason.BAD_GENOTYPE, loc, f"基因型无法识别: {raw.genotype!r}")
+                _reject(RejectReason.BAD_GENOTYPE, loc,
+                        f"基因型无法识别: {raw.genotype!r}", raw.sample)
             )
             continue
         # normalization (left alignment); guard against any coordinate error
         try:
             key = build_variant_key(chrom, pos, ref, alt)
         except ValueError as exc:
-            rejected.append(_reject(RejectReason.MALFORMED_LINE, loc, str(exc)))
+            rejected.append(_reject(RejectReason.MALFORMED_LINE, loc, str(exc), raw.sample))
             continue
         accepted.append(VariantRecord(key=key, sample=raw.sample, genotype=genotype, location=loc))
 
